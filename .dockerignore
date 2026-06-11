@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+data
+__pycache__
+*.pyc
+.pytest_cache
+.env
+DESIGN.md
+IMPLEMENTATION_PLAN.md
+PROJECT_CONTEXT.md
+samples

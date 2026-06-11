@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Video Stitcher — AI Video Editor</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1e27; --fg:#e7eaf0; --mut:#9aa3b2; --acc:#5b8cff; --ok:#3ecf8e; --err:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  .wrap { max-width:840px; margin:0 auto; padding:28px 18px 64px; }
+  h1 { font-size:24px; margin:0 0 4px; } .sub { color:var(--mut); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid #262c38; border-radius:12px; padding:18px; margin-bottom:18px; }
+  label { display:block; font-size:13px; color:var(--mut); margin:12px 0 6px; }
+  input,select,textarea,button { font:inherit; color:var(--fg); }
+  input[type=file],select,textarea,input[type=number] { width:100%; background:#11151d; border:1px solid #2b3342; border-radius:8px; padding:10px; }
+  textarea { min-height:60px; resize:vertical; }
+  .row { display:flex; gap:12px; } .row > div { flex:1; }
+  button { background:var(--acc); border:0; border-radius:8px; padding:11px 18px; font-weight:600; cursor:pointer; margin-top:16px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .bar { height:8px; background:#11151d; border-radius:6px; overflow:hidden; margin:8px 0; }
+  .bar > i { display:block; height:100%; background:var(--acc); width:0; transition:width .3s; }
+  .pill { display:inline-block; font-size:12px; padding:2px 9px; border-radius:20px; background:#222a38; color:var(--mut); }
+  .pill.ok { background:#16331f; color:var(--ok); } .pill.err { background:#3a1c1c; color:var(--err); }
+  .muted { color:var(--mut); font-size:13px; } video { width:100%; border-radius:10px; margin-top:10px; background:#000; }
+  .skip { font-size:13px; color:var(--err); } .rationale { font-size:13px; background:#11151d; border-radius:8px; padding:10px; margin-top:8px; }
+  .jobs a { color:var(--acc); text-decoration:none; } .jobs li { margin:4px 0; }
+  code { background:#11151d; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎬 Video Stitcher</h1>
+  <p class="sub">Upload up to 50 videos → an AI editor assembles one coherent, production-quality video (10–120s).</p>
+
+  <div class="card">
+    <label>Videos (mp4, mov, webm, mkv — up to 50)</label>
+    <input id="files" type="file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.webm,.mkv" multiple />
+    <label>Creative brief (optional — steers the edit; leave blank to auto-detect)</label>
+    <textarea id="brief" placeholder="e.g. energetic 30s ad for a coffee shop"></textarea>
+    <div class="row">
+      <div><label>Target duration (s, optional)</label><input id="target" type="number" min="10" max="120" placeholder="auto" /></div>
+      <div><label>Aspect</label><select id="aspect"><option value="16:9">16:9 (landscape)</option><option value="9:16">9:16 (vertical)</option><option value="1:1">1:1 (square)</option></select></div>
+    </div>
+    <button id="go">Upload &amp; Generate</button>
+    <div id="upbar" class="bar" style="display:none"><i id="upfill"></i></div>
+    <div id="formerr" class="skip"></div>
+  </div>
+
+  <div id="status" class="card" style="display:none"></div>
+
+  <div class="card">
+    <label>Recent jobs</label>
+    <ul id="jobs" class="jobs muted"></ul>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = (p, o) => fetch(p, o).then(async r => { const j = await r.json().catch(()=>({})); if(!r.ok) throw (j.error||{message:r.statusText}); return j; });
+let pollTimer = null;
+
+$("#go").onclick = async () => {
+  const files = $("#files").files;
+  $("#formerr").textContent = "";
+  if (!files.length) { $("#formerr").textContent = "Pick at least one video."; return; }
+  if (files.length > 50) { $("#formerr").textContent = "Max 50 files."; return; }
+
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  if ($("#brief").value.trim()) fd.append("brief", $("#brief").value.trim());
+  if ($("#target").value) fd.append("target_duration", $("#target").value);
+  fd.append("aspect", $("#aspect").value);
+
+  $("#go").disabled = true; $("#upbar").style.display = "block";
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/jobs");
+  xhr.upload.onprogress = e => { if (e.lengthComputable) $("#upfill").style.width = (e.loaded/e.total*100)+"%"; };
+  xhr.onload = () => {
+    $("#go").disabled = false; $("#upbar").style.display = "none"; $("#upfill").style.width = "0";
+    let j = {}; try { j = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status >= 400) { $("#formerr").textContent = (j.error && j.error.message) || ("Error "+xhr.status); return; }
+    poll(j.job_id);
+    loadJobs();
+  };
+  xhr.onerror = () => { $("#go").disabled = false; $("#upbar").style.display="none"; $("#formerr").textContent = "Network error."; };
+  xhr.send(fd);
+};
+
+function poll(id) {
+  clearInterval(pollTimer);
+  const tick = async () => {
+    try {
+      const j = await api(`/api/jobs/${id}`);
+      render(j);
+      if (j.status === "completed" || j.status === "failed") { clearInterval(pollTimer); loadJobs(); }
+    } catch (e) { /* transient — keep polling */ }
+  };
+  tick(); pollTimer = setInterval(tick, 2000);
+}
+
+function render(j) {
+  const s = $("#status"); s.style.display = "block";
+  const pct = j.progress.total ? Math.round(j.progress.current/j.progress.total*100) : 0;
+  let cls = "pill", label = j.status;
+  if (j.status === "completed") cls = "pill ok";
+  if (j.status === "failed") cls = "pill err";
+  let html = `<div><span class="${cls}">${label}</span> &nbsp;<span class="muted">stage: ${j.progress.stage} ${j.progress.total?`(${j.progress.current}/${j.progress.total})`:""}</span></div>`;
+  if (j.status === "processing" || j.status === "queued")
+    html += `<div class="bar"><i style="width:${pct}%"></i></div>`;
+  if (j.detected_genre) html += `<div class="muted" style="margin-top:8px">Detected: <b>${j.detected_genre}</b>${j.planner_used?` · planner: ${j.planner_used}`:""}</div>`;
+  if (j.rationale) html += `<div class="rationale">🧠 ${j.rationale}</div>`;
+  html += `<div class="muted" style="margin-top:8px">Uploaded ${j.total_uploaded} · used ${j.used} · skipped ${j.skipped}</div>`;
+  if (j.skipped_files && j.skipped_files.length)
+    html += `<div class="skip">Skipped: ${j.skipped_files.map(f=>`${f.filename} (${f.reason})`).join("; ")}</div>`;
+  if (j.status === "failed") html += `<div class="skip" style="margin-top:8px">❌ ${j.error||"Failed"}</div>`;
+  if (j.status === "completed" && j.download_url) {
+    html += `<div style="margin-top:10px"><a href="${j.download_url}"><button style="margin:0">⬇ Download (${j.output_duration}s)</button></a></div>`;
+    html += `<video src="${j.download_url}" controls></video>`;
+  }
+  s.innerHTML = html;
+}
+
+async function loadJobs() {
+  try {
+    const jobs = await api("/api/jobs");
+    $("#jobs").innerHTML = jobs.map(j =>
+      `<li><a href="#" onclick="poll('${j.job_id}');return false">${j.job_id.slice(0,8)}</a> — ${j.status} ${j.detected_genre?("· "+j.detected_genre):""}</li>`
+    ).join("") || "<li>None yet.</li>";
+  } catch {}
+}
+loadJobs();
+</script>
+</body>
+</html>

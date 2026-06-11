@@ -1,0 +1,18 @@
+# One-command local run:  docker compose up --build
+# Then open http://localhost:8000  (works fully offline — heuristic planner + local storage).
+services:
+  app:
+    build:
+      context: .
+      args:
+        INSTALL_ML: "0"          # set to "1" to enable CLIP/object-detection (pulls torch)
+    ports:
+      - "8090:8000"
+    # Load ALL config + secrets from .env (STORAGE_BACKEND, R2_*, GEMINI/GROQ keys, limits).
+    env_file: .env
+    environment:
+      PORT: "8000"
+      # Override for a fast first smoke test — remove this line to honor .env (true = speech-aware cuts).
+      ENABLE_WHISPER: "false"
+    volumes:
+      - ./data:/app/data

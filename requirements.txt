@@ -1,0 +1,27 @@
+# --- Core web ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# --- Storage (R2 / S3-compatible) ---
+boto3==1.35.92
+
+# --- Media analysis (local, free) ---
+scenedetect==0.6.5
+opencv-python-headless==4.10.0.84
+numpy==2.2.1
+
+# --- Speech understanding (CTranslate2-based, no torch → stays lean; toggled by ENABLE_WHISPER) ---
+faster-whisper==1.1.1
+# Note: CLIP visual tags + object detection (torch-based) live in requirements-ml.txt — install
+# only if you enable ENABLE_CLIP / ENABLE_DETECT.
+
+# --- LLM planners (free-tier) ---
+google-generativeai==0.8.3
+groq==0.13.1
+
+# --- Tests ---
+pytest==8.3.4
+httpx==0.28.1

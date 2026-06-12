@@ -16,6 +16,7 @@ from app.pipeline import analyze, catalog, enforce, ingest, render, segment
 from app.pipeline.allocate import compute_target
 from app.pipeline.enforce import InsufficientFootage
 from app.pipeline.plan.chain import make_plan
+from app.pipeline.plan.critic import critique
 from app.storage import storage
 
 log = logging.getLogger("pipeline")
@@ -53,6 +54,19 @@ def run_job(job_id: str) -> None:
     repo.set_progress(job_id, Stage.PLAN.value, 0, 1)
     cat = catalog.build_catalog(segments)
     plan = make_plan(cat, segments, job.brief, target)
+    # Agentic critic: review the plan; if it flags problems, re-plan once with the feedback appended.
+    if settings.enable_critic and plan.planner_used != "heuristic":
+        for _ in range(settings.critic_max_iters):
+            verdict = critique(plan, cat, job.brief)
+            log.info("critic: approved=%s feedback=%r", verdict["approved"], verdict["feedback"][:140])
+            if verdict["approved"] or not verdict["feedback"]:
+                break
+            refine_brief = f"{job.brief or ''}\n\nADDRESS THIS EDITOR FEEDBACK: {verdict['feedback']}"
+            plan = make_plan(cat, segments, refine_brief, target)
+    log.info(
+        "plan: genre=%r planner=%s beats=%d title=%r",
+        plan.detected_genre, plan.planner_used, len(plan.beats), plan.title_text,
+    )
     repo.set_progress(job_id, Stage.PLAN.value, 1, 1)
 
     # 5. ENFORCE → validated EDL with the guaranteed duration
@@ -76,8 +90,11 @@ def run_job(job_id: str) -> None:
         used_count=len(used_files),
     )
 
-    # 6. RENDER → output (brand title + CTA come from the LLM plan; rendered as on-screen text)
-    output_key = render.render(job_id, edl, job.aspect, title=plan.title_text, cta=plan.cta_text)
+    # 6. RENDER → output (brand title + CTA + music mood come from the LLM plan)
+    output_key, actual_duration = render.render(
+        job_id, edl, job.aspect,
+        title=plan.title_text, cta=plan.cta_text, music_mood=plan.music_mood,
+    )
 
     # 7. DONE
     repo.update_job(
@@ -85,7 +102,7 @@ def run_job(job_id: str) -> None:
         status=JobStatus.COMPLETED.value,
         stage=Stage.DONE.value,
         output_key=output_key,
-        output_duration=final_duration,
+        output_duration=actual_duration,
     )
     _cleanup(job_id, keep_output=True)
 

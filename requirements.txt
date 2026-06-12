@@ -12,6 +12,8 @@ boto3==1.35.92
 scenedetect==0.6.5
 opencv-python-headless==4.10.0.84
 numpy==2.2.1
+# Note: beat-synced cuts (ENABLE_BEATSYNC) need librosa — see requirements-ml.txt (it's heavy and
+# the feature is opt-in; beats.py degrades gracefully when librosa isn't installed).
 
 # --- Speech understanding (CTranslate2-based, no torch → stays lean; toggled by ENABLE_WHISPER) ---
 faster-whisper==1.1.1

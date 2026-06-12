@@ -105,6 +105,7 @@ class EDLItem:
     out_point: float
     duration: float
     transition_in: str = "cut"  # cut | crossfade
+    words: list[dict] = field(default_factory=list)  # clip-relative [{word,start,end}] for captions
 
 
 @dataclass

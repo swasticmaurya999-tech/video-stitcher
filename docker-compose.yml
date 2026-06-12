@@ -12,7 +12,6 @@ services:
     env_file: .env
     environment:
       PORT: "8000"
-      # Override for a fast first smoke test — remove this line to honor .env (true = speech-aware cuts).
-      ENABLE_WHISPER: "false"
+      # Whisper now ON (honoring .env) for real understanding — speech-aware cuts + genre detection.
     volumes:
       - ./data:/app/data

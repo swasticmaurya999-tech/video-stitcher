@@ -74,7 +74,9 @@ def _transcribe(path: str) -> list[dict]:
     if model is None:
         return []
     try:
-        segments, _ = model.transcribe(path, word_timestamps=True, vad_filter=True)
+        segments, _ = model.transcribe(
+            path, task=settings.whisper_task, word_timestamps=True, vad_filter=True
+        )
         words = []
         for seg in segments:
             for w in getattr(seg, "words", None) or []:
@@ -150,12 +152,87 @@ def _words_in(words: list[dict], in_p: float, out_p: float) -> list[dict]:
     return [w for w in words if w["start"] >= in_p - 0.2 and w["end"] <= out_p + 0.2]
 
 
+def _frame_hash(path: str, t: float) -> int | None:
+    """64-bit perceptual dHash of a frame, for near-duplicate visual detection."""
+    cv2, np = _safe_cv2()
+    if cv2 is None:
+        return None
+    try:
+        cap = cv2.VideoCapture(path)
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            return None
+        gray = cv2.cvtColor(cv2.resize(frame, (9, 8)), cv2.COLOR_BGR2GRAY)
+        diff = gray[:, 1:] > gray[:, :-1]
+        h = 0
+        for bit in diff.flatten():
+            h = (h << 1) | int(bit)
+        return h
+    except Exception:
+        return None
+
+
+def _norm_text(t: str) -> str:
+    return " ".join(t.lower().split())
+
+
+def dedup_segments(segments: list[Segment]) -> list[Segment]:
+    """Drop near-duplicate segments (identical re-uploads, or same speech) keeping the higher-scored
+    one. Visual: perceptual-hash Hamming distance. Textual: transcript similarity. (DESIGN: variety.)
+    """
+    from difflib import SequenceMatcher
+
+    ranked = sorted(segments, key=lambda s: s.score, reverse=True)
+    kept: list[Segment] = []
+    kept_hashes: list[int] = []
+    for s in ranked:
+        fh = _frame_hash(s.source_path, (s.in_point + s.out_point) / 2)
+        txt = _norm_text(s.transcript)
+        is_dup = False
+        for i, k in enumerate(kept):
+            # visual near-duplicate (hamming distance over the 64-bit hash)
+            if fh is not None and kept_hashes[i] is not None:
+                if bin(fh ^ kept_hashes[i]).count("1") <= 8:
+                    is_dup = True
+                    break
+            # textual near-duplicate (same spoken content)
+            ktxt = _norm_text(k.transcript)
+            if txt and ktxt and SequenceMatcher(None, txt, ktxt).ratio() >= settings.dedup_threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            kept.append(s)
+            kept_hashes.append(fh)
+    return kept
+
+
 def analyze(job_id: str, files: list[IngestedFile], segments: list[Segment]) -> list[Segment]:
     # Transcribe each source once, then map to its segments.
     transcripts: dict[str, list[dict]] = {}
     if settings.enable_whisper:
         for f in files:
             transcripts[f.path] = _transcribe(f.path)
+
+    # File-level audio dedup: two files with near-identical SPEECH (the same ad uploaded twice, or
+    # two cuts sharing ONE voiceover) → keep only one, else the same audio plays twice in the output.
+    if settings.enable_whisper and len(files) > 1:
+        from difflib import SequenceMatcher
+
+        full = {p: _norm_text(" ".join(w.get("word", "") for w in ws)) for p, ws in transcripts.items()}
+        paths = [f.path for f in files if len(full.get(f.path, "").split()) >= 5]
+        dropped: set[str] = set()
+        for ai in range(len(paths)):
+            for bi in range(ai + 1, len(paths)):
+                pa, pb = paths[ai], paths[bi]
+                if pa in dropped or pb in dropped:
+                    continue
+                if SequenceMatcher(None, full[pa], full[pb]).ratio() >= settings.file_dedup_threshold:
+                    dropped.add(pb)
+        if dropped:
+            segments = [s for s in segments if s.source_path not in dropped]
+            log.info("file-dedup: dropped %d file(s) with duplicate audio", len(dropped))
 
     repo.set_progress(job_id, "analyze", 0, len(segments))
     for i, seg in enumerate(segments):
@@ -172,6 +249,15 @@ def analyze(job_id: str, files: list[IngestedFile], segments: list[Segment]) -> 
             seg.words = _words_in(words, seg.in_point, seg.out_point)
             seg.transcript = " ".join(w["word"].strip() for w in seg.words)[:500]
         repo.set_progress(job_id, "analyze", i + 1, len(segments))
+
+    n_speech = sum(1 for s in segments if s.transcript.strip())
+    log.info("analyzed %d segments (%d with speech, whisper=%s)", len(segments), n_speech, settings.enable_whisper)
+
+    # Remove near-duplicate segments (identical re-uploads / repeated speech) → variety.
+    before = len(segments)
+    segments = dedup_segments(segments)
+    if len(segments) < before:
+        log.info("dedup removed %d near-duplicate segment(s)", before - len(segments))
 
     # Persist segment metadata.
     for seg in segments:

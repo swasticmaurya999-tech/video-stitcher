@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
     llm_timeout: int = 30
+    enable_critic: bool = True      # 2nd LLM pass reviews the plan + refines if flagged
+    critic_max_iters: int = 2
 
     # --- Limits ---
     max_files: int = 50
@@ -34,8 +36,8 @@ class Settings(BaseSettings):
     max_total_size_mb: int = 1024
     min_output_sec: int = 10
     max_output_sec: int = 120
-    clip_seconds: float = 3.0
-    min_clip: float = 1.0
+    clip_seconds: float = 3.5
+    min_clip: float = 1.5      # longer min clip → fewer, cleaner cuts (all crossfade-able)
 
     # --- Output profile ---
     target_width: int = 1920
@@ -48,14 +50,28 @@ class Settings(BaseSettings):
     enable_detect: bool = False     # YOLO object/person detection (needs requirements-ml)
     enable_whisper: bool = True     # speech transcription + speech-aware cuts
     enable_stabilize: bool = False  # ffmpeg deshake on shaky clips
-    enable_music: bool = True       # mix a background music bed under the output (ad soundtrack)
-    music_path: str = ""            # custom track; empty → bundled app/assets/music.mp3
-    music_volume: float = 0.35      # 0..1 — music level under the clip audio
+    enable_transitions: bool = True   # crossfade dissolves between clips (vs hard cuts)
+    crossfade_duration: float = 0.5   # seconds of dissolve between clips
+    enable_beatsync: bool = False     # nudge cuts onto the music beats (opt-in, experimental)
+    enable_endfade: bool = True       # fade in at the start + fade to black at the end
+    # audio_mode: "voiceover" = keep clip speech, duck music UNDER it (preserves message — default);
+    #             "music" = mute clips + music bed only;  "mix" = music under clip audio (no duck);
+    #             "clips" = clip audio only, no music.
+    audio_mode: str = "voiceover"
+    music_path: str = ""            # force a specific track; empty → mood-picked from the library
+    music_library_dir: str = "app/assets/music"
+    music_volume: float = 0.35      # 0..1 — base music level (mix mode; voiceover/music auto-set)
+    duck_level: float = 0.25        # reserved hint for music level while speech is present
     enable_text: bool = True        # render LLM/brand title + CTA as on-screen text (branded ad)
+    enable_captions: bool = True    # burn word-synced captions of the speech (readable on mute)
+    caption_fontsize_div: int = 18  # caption font size = output_height / this
     brand_font: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
     # --- Analysis bounding ---
     whisper_model: str = "base"
+    whisper_task: str = "translate"   # "translate" → English (robust for any language) | "transcribe"
+    dedup_threshold: float = 0.82     # transcript similarity above which clips are near-duplicates
+    file_dedup_threshold: float = 0.82  # full-audio similarity above which two FILES are the same
     analyze_fps: float = 1.0
     analyze_maxdim: int = 480
     max_segments_considered: int = 120
@@ -90,6 +106,11 @@ class Settings(BaseSettings):
     @property
     def planners(self) -> list[str]:
         return [p.strip().lower() for p in self.planner_chain.split(",") if p.strip()]
+
+    @property
+    def groq_keys(self) -> list[str]:
+        """GROQ_API_KEY may be a comma-separated list (multiple accounts → main + fallback)."""
+        return [k.strip() for k in self.groq_api_key.split(",") if k.strip()]
 
     @property
     def dims(self) -> tuple[int, int]:

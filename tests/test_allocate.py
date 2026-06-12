@@ -1,4 +1,30 @@
-from app.pipeline.allocate import compute_target, round_allocations, select_subset, water_fill
+from app.pipeline.allocate import (
+    compute_target,
+    round_allocations,
+    select_subset,
+    water_fill,
+    weighted_water_fill,
+)
+
+
+def test_weighted_water_fill_respects_weights():
+    # Hook (weight 3) gets ~3x the screen time of the others; sum == target.
+    alloc = weighted_water_fill([10, 10, 10], [3, 1, 1], 10)
+    assert abs(sum(alloc) - 10) < 1e-6
+    assert abs(alloc[0] - 6) < 1e-6 and abs(alloc[1] - 2) < 1e-6
+
+
+def test_weighted_water_fill_equal_weights_is_even():
+    a = weighted_water_fill([10, 10, 10], [1, 1, 1], 9)
+    assert all(abs(x - 3) < 1e-6 for x in a)
+
+
+def test_weighted_water_fill_caps_and_redistributes():
+    # First clip wants 6s but only has 1s → it caps, leftover flows to the others by weight.
+    alloc = weighted_water_fill([1, 10, 10], [3, 1, 1], 10)
+    assert abs(sum(alloc) - 10) < 1e-6
+    assert abs(alloc[0] - 1) < 1e-6
+    assert abs(alloc[1] - 4.5) < 1e-6 and abs(alloc[2] - 4.5) < 1e-6
 
 
 def test_compute_target_computed_and_clamped():

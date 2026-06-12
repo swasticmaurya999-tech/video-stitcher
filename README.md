@@ -95,23 +95,26 @@ See **[WALKTHROUGH.md](WALKTHROUGH.md)** for the full architecture, decisions, a
 
 Key knobs: `STORAGE_BACKEND` (local|r2), `R2_*`, `GEMINI_API_KEY`/`GROQ_API_KEY`,
 `MAX_FILES`, `MAX_FILE_SIZE_MB`, `MAX_TOTAL_SIZE_MB`, `MIN_OUTPUT_SEC`/`MAX_OUTPUT_SEC`,
-`ASPECT` (16:9|9:16|1:1), `WORKER_CONCURRENCY`, and feature toggles
-`ENABLE_WHISPER/CLIP/DETECT/STABILIZE`.
+`ASPECT` (16:9|9:16|1:1), `WORKER_CONCURRENCY`, `AUDIO_MODE` (voiceover|music|mix|clips), and feature
+toggles `ENABLE_WHISPER/CAPTIONS/TRANSITIONS/CRITIC/CLIP/DETECT/STABILIZE/BEATSYNC`.
 
 Heavy passes are toggles so you can trade quality ↔ compute on a small box.
 
 ### What's implemented vs. roadmap
-**Implemented:** async upload→generate→download, validation + skip reporting, shot-boundary cuts,
-quality/CLIP/object-aware selection, speech-aware cuts (Whisper), water-fill duration guarantee,
-LLM storyboard with Gemini→Groq→heuristic failover, loudness normalization, **background music bed
-(ad soundtrack)**, **on-screen brand title + CTA text** (from the LLM/brief), optional stabilization,
-R2/local storage, persisted segments, TTL cleanup, crash recovery.
-**Roadmap (not built):** crossfade transitions, burned captions (full speech subtitles), logo image
-overlay, multiple A/B variants, TTS voiceover, subject-aware vertical reframe. (See WALKTHROUGH §9.)
+**Implemented:** async upload→generate→download, validation + skip reporting, near-duplicate dedup,
+shot-boundary cuts, quality/CLIP/object-aware selection, speech-aware cuts (Whisper, any language →
+English), water-fill duration guarantee, LLM storyboard with Gemini→Groq→heuristic failover, an
+**agentic critic loop** (review + refine), **keep-speech audio with music ducked under it**,
+**mood-matched music variety**, **burned word-synced captions**, **crossfade transitions**,
+**beat-synced cuts** (opt-in), **brand title + CTA text**, loudness normalization, optional
+stabilization, R2/local storage, persisted segments, TTL cleanup, crash recovery.
+**Roadmap (not built):** TTS voiceover, logo-image overlay, multiple A/B variants, subject-aware
+vertical reframe. (See WALKTHROUGH §9.)
 
-> **Music credit:** the bundled `app/assets/music.mp3` is *"Carefree"* by Kevin MacLeod
-> (incompetech.com), licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
-> Replace it via `MUSIC_PATH`, or disable with `ENABLE_MUSIC=false`.
+> **Music credit:** bundled tracks in `app/assets/music/` are by **Kevin MacLeod** (incompetech.com),
+> licensed [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). The system mood-matches and
+> rotates them per output; override with `MUSIC_PATH`, or change behavior with `AUDIO_MODE`
+> (`voiceover` | `music` | `mix` | `clips`).
 
 ---
 
@@ -122,8 +125,9 @@ overlay, multiple A/B variants, TTS voiceover, subject-aware vertical reframe. (
 | **Python + FastAPI + uvicorn** | async API, first-class uploads, fast to build/read |
 | **ffmpeg / ffprobe** | the media engine — trim/normalize/concat + validation |
 | **SQLite** | durable jobs + queue + metadata, zero external infra |
-| **PySceneDetect, OpenCV** | shot detection + quality/motion scoring |
-| **faster-whisper** | speech transcription + word timestamps (speech-aware cuts) |
+| **PySceneDetect, OpenCV** | shot detection + quality/motion scoring + perceptual-hash dedup |
+| **faster-whisper** | speech transcription + word timestamps (speech-aware cuts + captions) |
+| **librosa** | beat detection for beat-synced cuts |
 | **open-clip, ultralytics** *(optional, `requirements-ml.txt`)* | visual tags + object/person detection |
 | **Gemini / Groq (free tier)** | the editorial "brain" (storyboard), with heuristic fallback |
 | **Cloudflare R2 (boto3)** | S3-compatible object storage, zero egress |

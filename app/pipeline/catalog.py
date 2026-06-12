@@ -16,7 +16,7 @@ def build_catalog(segments: list[Segment]) -> list[dict]:
                 "duration": round(s.duration, 2),
                 "score": round(s.score, 3),
                 "tags": s.tags,
-                "transcript": s.transcript[:200],
+                "transcript": s.transcript[:500],
                 "in": round(s.in_point, 2),
                 "out": round(s.out_point, 2),
             }

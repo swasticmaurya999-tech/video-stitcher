@@ -65,6 +65,50 @@ def water_fill(capacities: list[float], target: float) -> list[float]:
     return alloc
 
 
+def weighted_water_fill(capacities: list[float], weights: list[float], target: float) -> list[float]:
+    """Like `water_fill`, but each clip's fair share is proportional to its `weight` (the LLM's
+    intended length / pacing) instead of equal. Short clips still cap out and release their leftover.
+
+    Equal weights reproduce `water_fill`. Sum == target when total capacity >= target.
+    """
+    n = len(capacities)
+    alloc = [0.0] * n
+    if n == 0 or target <= 0:
+        return alloc
+    w = [max(0.0, x) for x in weights]
+    open_idx = list(range(n))
+    budget = float(target)
+    while open_idx:
+        total_w = sum(w[i] for i in open_idx)
+        if total_w <= 1e-9:  # no usable weights → fall back to an even split
+            share = budget / len(open_idx)
+            constrained = [i for i in open_idx if capacities[i] < share - 1e-9]
+            if constrained:
+                for i in constrained:
+                    alloc[i] = capacities[i]
+                    budget -= capacities[i]
+                    open_idx.remove(i)
+                if budget <= 1e-9:
+                    break
+                continue
+            for i in open_idx:
+                alloc[i] = share
+            break
+        constrained = [i for i in open_idx if capacities[i] < budget * w[i] / total_w - 1e-9]
+        if constrained:
+            for i in constrained:
+                alloc[i] = capacities[i]
+                budget -= capacities[i]
+                open_idx.remove(i)
+            if budget <= 1e-9:
+                break
+            continue
+        for i in open_idx:
+            alloc[i] = budget * w[i] / total_w
+        break
+    return alloc
+
+
 def round_allocations(alloc: list[float], precision: float = 0.1) -> list[float]:
     """Round to `precision`, then make the largest allocation absorb the rounding drift so the
     total is preserved exactly (no cumulative drift away from the target)."""

@@ -6,6 +6,7 @@ download-to-temp round trips free.
 """
 from __future__ import annotations
 
+import mimetypes
 import time
 from pathlib import Path
 from typing import BinaryIO
@@ -14,6 +15,10 @@ import boto3
 from botocore.client import Config
 
 from app.config import settings
+
+
+def _content_type(key: str) -> str:
+    return mimetypes.guess_type(key)[0] or "application/octet-stream"
 
 
 class R2Storage:
@@ -40,11 +45,17 @@ class R2Storage:
 
     def save_stream(self, key: str, stream: BinaryIO) -> int:
         # boto3 upload_fileobj streams in parts; it doesn't return a count, so we don't rely on it.
-        self._retry(self.client.upload_fileobj, stream, self.bucket, key)
+        self._retry(
+            self.client.upload_fileobj, stream, self.bucket, key,
+            ExtraArgs={"ContentType": _content_type(key)},
+        )
         return self._head_size(key)
 
     def save_file(self, key: str, local_path: str) -> None:
-        self._retry(self.client.upload_file, local_path, self.bucket, key)
+        self._retry(
+            self.client.upload_file, local_path, self.bucket, key,
+            ExtraArgs={"ContentType": _content_type(key)},
+        )
 
     def download(self, key: str, local_path: str) -> None:
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,10 @@
-# Optional heavy ML deps — install ONLY if enabling ENABLE_CLIP (visual tags) or ENABLE_DETECT
-# (object/face detection). These pull in torch (multi-GB). Whisper does NOT need these.
+# Optional heavy deps — install ONLY if enabling ENABLE_CLIP / ENABLE_DETECT (visual tags / object
+# detection — pull in torch, multi-GB) or ENABLE_BEATSYNC (librosa — beat detection).
+# Whisper, captions, ducking, transitions, and the critic do NOT need any of these.
 #   pip install -r requirements-ml.txt
 open-clip-torch==2.30.0
 ultralytics==8.3.55
 pillow==11.1.0
 torch==2.5.1
+librosa==0.10.2.post1
+soundfile==0.12.1

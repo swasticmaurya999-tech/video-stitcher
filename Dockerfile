@@ -7,7 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=7860 \
     DATA_DIR=/app/data \
     DB_PATH=/app/data/app.db \
-    TEMP_DIR=/app/data/tmp
+    TEMP_DIR=/app/data/tmp \
+    HF_HOME=/app/data/.cache/huggingface \
+    XDG_CACHE_HOME=/app/data/.cache \
+    MPLCONFIGDIR=/app/data/.cache/mpl
 
 # System deps: ffmpeg (media) + libGL/glib (OpenCV runtime).
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,4 +30,4 @@ COPY app ./app
 RUN mkdir -p /app/data/tmp && chmod -R 777 /app/data
 
 EXPOSE 7860
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

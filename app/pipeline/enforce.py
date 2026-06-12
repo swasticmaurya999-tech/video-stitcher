@@ -6,30 +6,49 @@ snapped to speech/silence boundaries, and clip lengths are re-balanced with wate
 """
 from __future__ import annotations
 
+from difflib import SequenceMatcher
+
 from app.config import settings
 from app.models import EDLItem, Plan, Segment
-from app.pipeline.allocate import water_fill
+from app.pipeline.allocate import weighted_water_fill
 
 
 class InsufficientFootage(Exception):
     pass
 
 
-def _snap_point(t: float, words: list[dict], lo: float, hi: float, tol: float = 0.4) -> float:
-    """Snap a cut point to the nearest word boundary within `tol` seconds, clamped to [lo, hi].
+def _snap_point(t: float, words: list[dict], lo: float, hi: float, tol: float = 0.5) -> float:
+    """Snap a cut point to the nearest SILENCE within `tol` seconds, clamped to [lo, hi].
 
-    Avoids cutting mid-word for footage with speech; a no-op when there are no words nearby.
+    Cutting in a pause (gap between words) instead of mid-speech makes transitions far less abrupt.
+    Candidates: the midpoint of each inter-word gap, plus the very start/end of speech.
     """
     if not words:
         return min(hi, max(lo, t))
-    candidates = []
-    for w in words:
-        candidates.append(w.get("start", t))
-        candidates.append(w.get("end", t))
+    sw = sorted(words, key=lambda w: w.get("start", 0.0))
+    candidates: list[float] = [sw[0].get("start", t), sw[-1].get("end", t)]
+    for a, b in zip(sw, sw[1:]):
+        gap = b.get("start", 0.0) - a.get("end", 0.0)
+        if gap > 0.08:  # a real pause
+            candidates.append((a["end"] + b["start"]) / 2)
     best = min(candidates, key=lambda c: abs(c - t), default=t)
     if abs(best - t) <= tol:
         t = best
     return min(hi, max(lo, t))
+
+
+def _norm(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def _is_repeat(text: str, seen: list[str], threshold: float = 0.72) -> bool:
+    """True if `text` says substantially the same thing as something already selected."""
+    t = _norm(text)
+    if len(t.split()) < 4:  # too short to judge repetition reliably
+        return False
+    return any(
+        len(s.split()) >= 4 and SequenceMatcher(None, t, s).ratio() >= threshold for s in seen
+    )
 
 
 def build_edl(plan: Plan, segments: list[Segment], target: int) -> tuple[list[EDLItem], float]:
@@ -46,18 +65,29 @@ def build_edl(plan: Plan, segments: list[Segment], target: int) -> tuple[list[ED
     # 1. Resolve beats → (segment, start_point, transition). The LLM picks WHICH clip, WHERE to
     #    start, and the ORDER; the deterministic allocator decides each clip's LENGTH. So a clip can
     #    be extended up to its segment's end (cap = seg.out - start), not limited to the LLM's span.
-    resolved: list[list] = []   # [segment, start, transition]
+    resolved: list[list] = []   # [segment, start, transition, weight]
     used_ids: set[str] = set()
+    beat_weights: list[float] = []
+    seen_texts: list[str] = []   # transcripts already selected → skip repeated messages
     for beat in plan.beats:
         seg = by_id.get(beat.segment_id)
         if seg is None or seg.source_path is None:
+            continue
+        if _is_repeat(seg.transcript, seen_texts):  # the LLM picked a clip that repeats a message
             continue
         lo, hi = seg.in_point, seg.out_point
         start = _snap_point(min(max(beat.in_point, lo), hi), seg.words, lo, hi)
         if hi - start < 0.3:        # almost nothing left from here → start at segment beginning
             start = lo
-        resolved.append([seg, start, getattr(beat, "transition_in", "cut")])
+        weight = max(0.5, float(getattr(beat, "target_seconds", 0) or 0) or settings.clip_seconds)
+        beat_weights.append(weight)
+        resolved.append([seg, start, getattr(beat, "transition_in", "cut"), weight])
         used_ids.add(seg.id)
+        if _norm(seg.transcript):
+            seen_texts.append(_norm(seg.transcript))
+
+    # Default weight for any topped-up clips = the average pacing the LLM asked for.
+    default_weight = (sum(beat_weights) / len(beat_weights)) if beat_weights else settings.clip_seconds
 
     def _avail(item) -> float:
         return item[0].out_point - item[1]
@@ -74,8 +104,12 @@ def build_edl(plan: Plan, segments: list[Segment], target: int) -> tuple[list[ED
     for s in unused:
         if _total() >= target:
             break
-        resolved.append([s, s.in_point, "cut"])
+        if _is_repeat(s.transcript, seen_texts):  # don't top up with a repeated message either
+            continue
+        resolved.append([s, s.in_point, "cut", default_weight])
         used_ids.add(s.id)
+        if _norm(s.transcript):
+            seen_texts.append(_norm(s.transcript))
 
     if not resolved:
         raise InsufficientFootage("No usable segments to assemble.")
@@ -95,14 +129,28 @@ def build_edl(plan: Plan, segments: list[Segment], target: int) -> tuple[list[ED
     effective_target = max(
         settings.min_output_sec, min(target, settings.max_output_sec, total_available)
     )
-    alloc = water_fill(caps, effective_target)
+    weights = [r[3] for r in resolved]
+    alloc = weighted_water_fill(caps, weights, effective_target)
 
     # 4. Build EDL, each clip from its (snapped) start with the allocated length.
     edl: list[EDLItem] = []
-    for (seg, start, trans), length in zip(resolved, alloc):
+    for (seg, start, trans, _w), length in zip(resolved, alloc):
         length = min(length, seg.out_point - start)
         if length < 0.05:
             continue
+        # Snap the END cut to a pause/silence so we don't cut in the middle of someone speaking.
+        out = _snap_point(start + length, seg.words, start + min(settings.min_clip, length), seg.out_point, tol=1.0)
+        length = round(out - start, 3)
+        if length < 0.05:
+            continue
+        # Words inside this clip's final window, rebased to clip-relative time (for captions).
+        clip_words = [
+            {"word": w.get("word", "").strip(), "start": round(w["start"] - start, 3),
+             "end": round(w["end"] - start, 3)}
+            for w in seg.words
+            if w.get("start", 0) >= start - 0.15 and w.get("end", 0) <= start + length + 0.15
+            and w.get("word", "").strip()
+        ]
         edl.append(
             EDLItem(
                 segment_id=seg.id,
@@ -111,6 +159,7 @@ def build_edl(plan: Plan, segments: list[Segment], target: int) -> tuple[list[ED
                 out_point=round(start + length, 3),
                 duration=round(length, 3),
                 transition_in=trans,
+                words=clip_words,
             )
         )
     if not edl:

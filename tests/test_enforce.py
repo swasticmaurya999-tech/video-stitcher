@@ -58,6 +58,19 @@ def test_upper_bound_clamped_with_many_long_clips():
     assert dur <= 120.0
 
 
+def test_build_edl_drops_repeated_message():
+    # Two clips with the SAME transcript + one distinct → the duplicate message is dropped.
+    a, b, c = _seg("a", 8), _seg("b", 8), _seg("c", 8)
+    a.transcript = b.transcript = "mega blockbuster sale coming soon to meesho shop now today"
+    c.transcript = "easy returns and refund in five minutes guaranteed on every order"
+    plan = Plan(beats=[_beat("a", 0, 8), _beat("b", 0, 8), _beat("c", 0, 8)])
+    edl, dur = build_edl(plan, [a, b, c], target=15)
+    used = {e.segment_id for e in edl}
+    assert not ({"a", "b"} <= used)   # never both duplicates
+    assert "c" in used                # the distinct clip is kept
+    assert 10 <= dur <= 120
+
+
 def test_build_edl_insufficient_footage():
     segs = [_seg("a", 3), _seg("b", 2)]  # 5s total < 10s floor
     plan = Plan(beats=[_beat("a", 0, 3), _beat("b", 0, 2)])

@@ -124,6 +124,17 @@ def concat_copy(list_file: str, out_path: str) -> None:
     ])
 
 
+def burn_captions(video_in: str, ass_path: str, out_path: str) -> None:
+    """Burn styled ASS captions onto the video (libass). Re-encodes video; audio copied."""
+    # ass filter needs ':' and '\' escaped; container paths are POSIX so this is usually a no-op.
+    safe = ass_path.replace("\\", "/").replace(":", "\\:")
+    run([
+        "ffmpeg", "-y", "-i", video_in, "-vf", f"ass={safe}",
+        "-c:v", "libx264", "-preset", "faster", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "copy", "-movflags", "+faststart", out_path,
+    ])
+
+
 def add_text_overlays(
     video_in: str,
     out_path: str,
@@ -160,24 +171,99 @@ def add_text_overlays(
     ])
 
 
-def mix_music(video_in: str, music: str, out_path: str, duration: float, volume: float = 0.35) -> None:
-    """Mix a looping background music bed under the video's existing audio (ad soundtrack).
-
-    Music is looped to cover the whole video, lowered to `volume`, faded in/out, then mixed with
-    the clip audio. For silent footage the music becomes the soundtrack; for footage with audio it
-    sits underneath. Video is stream-copied (only audio is re-encoded).
+def apply_audio_ducked(
+    video_in: str, out_path: str, duration: float, music: str, music_volume: float = 0.5
+) -> None:
+    """Keep the clip audio (speech) and mix a music bed UNDERNEATH it that automatically ducks
+    when speech is present (sidechaincompress) and swells in the gaps. Preserves the message while
+    sounding intentional. Video is stream-copied; audio re-encoded.
     """
-    fade_out_start = max(0.0, duration - 1.5)
+    fade_out = max(0.0, duration - 1.5)
     fc = (
-        f"[1:a]volume={volume},afade=t=in:st=0:d=1,"
-        f"afade=t=out:st={fade_out_start:.2f}:d=1.5[bg];"
-        f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]"
+        f"[1:a]volume={music_volume},afade=t=in:st=0:d=1,afade=t=out:st={fade_out:.2f}:d=1.5[m];"
+        f"[0:a]asplit=2[sc][a0];"
+        f"[m][sc]sidechaincompress=threshold=0.02:ratio=8:attack=15:release=350[duck];"
+        f"[a0][duck]amix=inputs=2:duration=first:normalize=0[a]"
     )
     run([
         "ffmpeg", "-y", "-i", video_in, "-stream_loop", "-1", "-i", music,
         "-filter_complex", fc, "-map", "0:v:0", "-map", "[a]",
         "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2",
         "-shortest", "-movflags", "+faststart", out_path,
+    ])
+
+
+def apply_audio(
+    video_in: str, out_path: str, duration: float, mode: str, music: str, volume: float
+) -> None:
+    """Set the output soundtrack.
+
+    mode="music": replace audio with the looping music bed only (mute clips — clean montage).
+    mode="mix":   music bed UNDER the original clip audio.
+    Music is looped to cover the video and faded in/out. Video is stream-copied (audio re-encoded).
+    """
+    fade_out_start = max(0.0, duration - 1.5)
+    bed = (
+        f"[1:a]volume={volume},afade=t=in:st=0:d=1,afade=t=out:st={fade_out_start:.2f}:d=1.5"
+    )
+    if mode == "music":
+        fc = f"{bed}[a]"
+    else:  # mix
+        fc = f"{bed}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]"
+    run([
+        "ffmpeg", "-y", "-i", video_in, "-stream_loop", "-1", "-i", music,
+        "-filter_complex", fc, "-map", "0:v:0", "-map", "[a]",
+        "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2",
+        "-shortest", "-movflags", "+faststart", out_path,
+    ])
+
+
+def fade_video(video_in: str, out_path: str, duration: float, fin: float = 0.4, fout: float = 0.8) -> None:
+    """Fade the video in from black at the start and out to black at the end (+ matching audio fade)
+    — gives a clean, intentional ending instead of an abrupt cut to nothing. Re-encodes."""
+    fout_start = max(0.0, duration - fout)
+    vf = f"fade=t=in:st=0:d={fin},fade=t=out:st={fout_start:.2f}:d={fout}"
+    af = f"afade=t=in:st=0:d={fin},afade=t=out:st={fout_start:.2f}:d={fout}"
+    run([
+        "ffmpeg", "-y", "-i", video_in, "-vf", vf, "-af", af,
+        "-c:v", "libx264", "-preset", "faster", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", out_path,
+    ])
+
+
+def concat_with_transitions(
+    clips: list[str], durations: list[float], d_list: list[float], out_path: str,
+    transition: str = "dissolve",
+) -> None:
+    """Concatenate normalized clips with crossfade dissolves (video `xfade` + audio `acrossfade`).
+
+    `d_list[i-1]` is the dissolve length between clip i-1 and i (clamped per-pair by the caller so
+    even short clips get a transition — no hard cuts). Re-encodes.
+    """
+    n = len(clips)
+    if n == 1:
+        run(["ffmpeg", "-y", "-i", clips[0], "-c", "copy", "-movflags", "+faststart", out_path])
+        return
+    inputs: list[str] = []
+    for c in clips:
+        inputs += ["-i", c]
+    vparts, aparts = [], []
+    vlabel, alabel = "0:v", "0:a"
+    cum = durations[0]
+    for i in range(1, n):
+        d = d_list[i - 1]
+        offset = max(0.0, cum - d)
+        nv, na = f"v{i}", f"a{i}"
+        vparts.append(f"[{vlabel}][{i}:v]xfade=transition={transition}:duration={d:.3f}:offset={offset:.3f}[{nv}]")
+        aparts.append(f"[{alabel}][{i}:a]acrossfade=d={d:.3f}[{na}]")
+        vlabel, alabel = nv, na
+        cum = cum + durations[i] - d
+    fc = ";".join(vparts + aparts)
+    run([
+        "ffmpeg", "-y", *inputs, "-filter_complex", fc,
+        "-map", f"[{vlabel}]", "-map", f"[{alabel}]",
+        "-c:v", "libx264", "-preset", "faster", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", out_path,
     ])
 
 

@@ -14,8 +14,12 @@ Upload up to **50 videos** → an AI editor analyzes the footage, designs a logi
 assembles **one coherent, production-quality video (10–120s)** → download it. Backend-focused;
 async job processing with progress; runs fully offline (heuristic planner) or with free-tier LLMs.
 
-> The live feature is on Hugging Face Spaces (see submission). First request after idle may take
-> ~30s to warm up (cold start + model load).
+> **🔴 Live demo:** https://swasticmaurya999-video-stitcher.hf.space
+> (Hugging Face Spaces. First request after idle may take ~30–60s to warm up — Whisper model load.)
+>
+> **How to test (30s):** open the URL → pick a few short clips → optionally add a brief
+> (e.g. *"energetic 20s ad for a coffee shop"*) and an aspect (16:9 / 9:16) → **Upload & Generate** →
+> watch the live progress → **Download** the result. Or use the curl flow below.
 
 ---
 
